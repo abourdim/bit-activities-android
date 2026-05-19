@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Block Renderer — Pre-render all MakeCode blocks</title>
+<style>
+body { font-family: system-ui; background: #0a0f1e; color: #d0ddf0; padding: 20px; }
+h1 { color: #3b82f6; }
+#status { font-size: 14px; color: #888; margin: 10px 0; }
+#progress { width: 100%; height: 20px; background: #1a2332; border-radius: 10px; overflow: hidden; margin: 10px 0; }
+#bar { height: 100%; background: #3b82f6; width: 0%; transition: width 0.3s; border-radius: 10px; }
+#output { white-space: pre-wrap; font-size: 12px; color: #6a9; max-height: 300px; overflow-y: auto; background: #111; padding: 10px; border-radius: 8px; }
+button { background: #3b82f6; color: white; border: none; padding: 10px 20px; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: 700; }
+button:hover { background: #2563eb; }
+#download { display: none; margin-top: 10px; background: #40BF4A; }
+</style>
+</head>
+<body>
+<h1>MakeCode Block Pre-Renderer</h1>
+<p>This page renders all activity blocks via MakeCode iframe and saves them as images.</p>
+<button onclick="startRender()">Start Rendering</button>
+<button id="download" onclick="downloadJSON()">Download blocks.json</button>
+<div id="progress"><div id="bar"></div></div>
+<div id="status">Ready</div>
+<div id="output"></div>
+
+<iframe id="mcFrame" src="https://makecode.microbit.org/--docs?render=1" style="position:absolute;width:1px;height:1px;border:0;opacity:0"></iframe>
+
+<script>
+// Activity JS codes — extracted from index.html
+const ACTIVITIES = [];
+</script>
+
+<!-- Load activity data from index.html -->
+<script>
+// We'll fetch index.html and extract activity codes
+async function loadActivities() {
+  const resp = await fetch('index.html');
+  const html = await resp.text();
+
+  // Extract JS code from mk() calls
+  const pattern = /mk\((\d+),"([^"]+)","(\w+)",\{[^}]+\},[^`]*`([^`]*)`\s*,\s*`[^`]*`/gs;
+  let m;
+  while ((m = pattern.exec(html)) !== null) {
+    const id = parseInt(m[1]);
+    if (id <= 48) {
+      ACTIVITIES.push({ id: id, title: m[2], code: m[4].trim() });
+    }
+  }
+  ACTIVITIES.sort((a, b) => a.id - b.id);
+  document.getElementById('status').textContent = `Loaded ${ACTIVITIES.length} activities. Click "Start Rendering".`;
+}
+loadActivities();
+</script>
+
+<script>
+let mcReady = false;
+let results = {};
+let queue = [];
+let current = null;
+let total = 0;
+let done = 0;
+
+window.addEventListener('message', function(ev) {
+  const msg = ev.data;
+  if (!msg || typeof msg !== 'object') return;
+
+  if (msg.source === 'makecode' || msg.type === 'renderready') {
+    mcReady = true;
+    log('MakeCode renderer ready');
+    processNext();
+  }
+
+  if (msg.type === 'renderblocks' && msg.id) {
+    results[msg.id] = {
+      uri: msg.uri,
+      width: msg.width,
+      height: msg.height
+    };
+    done++;
+    updateProgress();
+    log(`Rendered: ${msg.id} (${done}/${total})`);
+
+    // Small delay between renders to not overwhelm
+    setTimeout(processNext, 300);
+  }
+});
+
+function processNext() {
+  if (queue.length === 0) {
+    if (done >= total && total > 0) {
+      finish();
+    }
+    return;
+  }
+  current = queue.shift();
+  const frame = document.getElementById('mcFrame');
+  frame.contentWindow.postMessage({
+    type: 'renderblocks',
+    id: current.id,
+    code: current.code
+  }, 'https://makecode.microbit.org');
+}
+
+function updateProgress() {
+  const pct = total > 0 ? Math.round(done / total * 100) : 0;
+  document.getElementById('bar').style.width = pct + '%';
+  document.getElementById('status').textContent = `Rendering: ${done} / ${total} (${pct}%)`;
+}
+
+function log(msg) {
+  const el = document.getElementById('output');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function startRender() {
+  if (ACTIVITIES.length === 0) {
+    log('No activities loaded!');
+    return;
+  }
+
+  results = {};
+  done = 0;
+  queue = [];
+
+  // Queue program renders
+  for (const a of ACTIVITIES) {
+    queue.push({ id: 'act-' + a.id, code: a.code });
+  }
+
+  total = queue.length;
+  log(`Starting render of ${total} blocks...`);
+  updateProgress();
+
+  if (mcReady) {
+    processNext();
+  } else {
+    log('Waiting for MakeCode iframe to be ready...');
+    // Fallback: try after 10s
+    setTimeout(() => {
+      if (!mcReady) {
+        mcReady = true;
+        log('Forcing start after 10s wait');
+        processNext();
+      }
+    }, 10000);
+  }
+}
+
+function finish() {
+  log('');
+  log('=== ALL DONE ===');
+  log(`Rendered ${Object.keys(results).length} blocks`);
+  document.getElementById('download').style.display = 'inline-block';
+  document.getElementById('status').textContent = `Done! ${Object.keys(results).length} blocks rendered. Click "Download blocks.json".`;
+}
+
+function downloadJSON() {
+  const json = JSON.stringify(results, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'blocks.json';
+  a.click();
+  URL.revokeObjectURL(url);
+  log('Downloaded blocks.json');
+}
+</script>
+</body>
+</html>
